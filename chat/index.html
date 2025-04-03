@@ -1,0 +1,112 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <title>Peer-to-Peer Chat (No Server)</title>
+  <style>
+    body { font-family: sans-serif; padding: 1em; max-width: 700px; margin: auto; }
+    textarea { width: 100%; height: 100px; }
+    #chat { border: 1px solid #ccc; padding: 1em; height: 150px; overflow-y: auto; margin-top: 1em; }
+    input, button { margin: 0.5em 0; }
+  </style>
+</head>
+<body>
+  <h2>Peer-to-Peer Chat (Manual WebRTC)</h2>
+
+  <h3>Start as Caller (Offer)</h3>
+  <button id="startButton">Create Offer</button>
+  <p>Send this offer to your friend:</p>
+  <textarea id="offer" readonly></textarea>
+
+  <h3>Or Join as Receiver (Answer)</h3>
+  <p>Paste offer from your friend:</p>
+  <textarea id="remoteOffer"></textarea>
+  <button id="generateAnswer">Generate Answer</button>
+  <p>Send this answer back to your friend:</p>
+  <textarea id="localAnswer" readonly></textarea>
+
+  <h3>Paste Answer (for Caller)</h3>
+  <p>Caller pastes the answer here:</p>
+  <textarea id="finalAnswer"></textarea>
+  <button id="acceptAnswer">Finish Connection</button>
+
+  <div id="chatSection" style="display:none;">
+    <h3>Chat</h3>
+    <div id="chat"></div>
+    <input type="text" id="messageInput" placeholder="Type a message..." />
+    <button id="sendButton">Send</button>
+  </div>
+
+  <script>
+    let pc = new RTCPeerConnection();
+    let dataChannel;
+
+    const offerBox = document.getElementById('offer');
+    const remoteOfferBox = document.getElementById('remoteOffer');
+    const localAnswerBox = document.getElementById('localAnswer');
+    const finalAnswerBox = document.getElementById('finalAnswer');
+    const chatDiv = document.getElementById('chat');
+    const input = document.getElementById('messageInput');
+    const sendBtn = document.getElementById('sendButton');
+    const chatSection = document.getElementById('chatSection');
+
+    function appendMessage(msg, from = 'Them') {
+      const p = document.createElement('p');
+      p.textContent = `${from}: ${msg}`;
+      chatDiv.appendChild(p);
+    }
+
+    function setupDataChannelEvents(dc) {
+      dc.onopen = () => chatSection.style.display = 'block';
+      dc.onmessage = e => appendMessage(e.data);
+    }
+
+    document.getElementById('startButton').onclick = async () => {
+      dataChannel = pc.createDataChannel("chat");
+      setupDataChannelEvents(dataChannel);
+
+      const offer = await pc.createOffer();
+      await pc.setLocalDescription(offer);
+
+      pc.onicecandidate = e => {
+        if (!e.candidate) {
+          offerBox.value = btoa(JSON.stringify(pc.localDescription));
+        }
+      };
+    };
+
+    document.getElementById('generateAnswer').onclick = async () => {
+      const remoteOffer = JSON.parse(atob(remoteOfferBox.value));
+      await pc.setRemoteDescription(remoteOffer);
+
+      pc.ondatachannel = event => {
+        dataChannel = event.channel;
+        setupDataChannelEvents(dataChannel);
+      };
+
+      const answer = await pc.createAnswer();
+      await pc.setLocalDescription(answer);
+
+      pc.onicecandidate = e => {
+        if (!e.candidate) {
+          localAnswerBox.value = btoa(JSON.stringify(pc.localDescription));
+        }
+      };
+    };
+
+    document.getElementById('acceptAnswer').onclick = async () => {
+      const finalAnswer = JSON.parse(atob(finalAnswerBox.value));
+      await pc.setRemoteDescription(finalAnswer);
+    };
+
+    sendBtn.onclick = () => {
+      const msg = input.value;
+      if (msg && dataChannel?.readyState === "open") {
+        dataChannel.send(msg);
+        appendMessage(msg, 'You');
+        input.value = '';
+      }
+    };
+  </script>
+</body>
+</html>
