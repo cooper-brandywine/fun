@@ -2,111 +2,151 @@
 <html>
 <head>
   <meta charset="UTF-8">
-  <title>Peer-to-Peer Chat (No Server)</title>
+  <title>Persistent WebRTC Chat (LocalStorage)</title>
   <style>
-    body { font-family: sans-serif; padding: 1em; max-width: 700px; margin: auto; }
-    textarea { width: 100%; height: 100px; }
-    #chat { border: 1px solid #ccc; padding: 1em; height: 150px; overflow-y: auto; margin-top: 1em; }
-    input, button { margin: 0.5em 0; }
+    body { font-family: sans-serif; padding: 1em; max-width: 800px; margin: auto; }
+    textarea, input { width: 100%; margin: 0.5em 0; }
+    #chat { border: 1px solid #ccc; height: 150px; overflow-y: auto; padding: 1em; }
+    #storedConnections { margin-top: 1em; }
   </style>
 </head>
 <body>
-  <h2>Peer-to-Peer Chat (Manual WebRTC)</h2>
+  <h2>Persistent WebRTC Chat (No Server)</h2>
 
-  <h3>Start as Caller (Offer)</h3>
-  <button id="startButton">Create Offer</button>
-  <p>Send this offer to your friend:</p>
+  <label>Nickname for This Connection:</label>
+  <input type="text" id="nickname" placeholder="Optional name...">
+
+  <button id="startOffer">Create New Offer</button>
   <textarea id="offer" readonly></textarea>
 
-  <h3>Or Join as Receiver (Answer)</h3>
-  <p>Paste offer from your friend:</p>
-  <textarea id="remoteOffer"></textarea>
-  <button id="generateAnswer">Generate Answer</button>
-  <p>Send this answer back to your friend:</p>
-  <textarea id="localAnswer" readonly></textarea>
-
-  <h3>Paste Answer (for Caller)</h3>
-  <p>Caller pastes the answer here:</p>
-  <textarea id="finalAnswer"></textarea>
-  <button id="acceptAnswer">Finish Connection</button>
+  <label>Paste Offer or Answer:</label>
+  <textarea id="inputSignal"></textarea>
+  <button id="processSignal">Process Input</button>
 
   <div id="chatSection" style="display:none;">
     <h3>Chat</h3>
     <div id="chat"></div>
-    <input type="text" id="messageInput" placeholder="Type a message..." />
-    <button id="sendButton">Send</button>
+    <input type="text" id="msg" placeholder="Type message...">
+    <button id="send">Send</button>
+  </div>
+
+  <div id="storedConnections">
+    <h4>Stored Connections</h4>
+    <ul id="connectionList"></ul>
+    <button id="clearAll">Delete All Stored Connections</button>
   </div>
 
   <script>
-    let pc = new RTCPeerConnection();
-    let dataChannel;
+    let pc = null, dataChannel = null;
+    const storageKey = 'webrtc-connections';
 
-    const offerBox = document.getElementById('offer');
-    const remoteOfferBox = document.getElementById('remoteOffer');
-    const localAnswerBox = document.getElementById('localAnswer');
-    const finalAnswerBox = document.getElementById('finalAnswer');
-    const chatDiv = document.getElementById('chat');
-    const input = document.getElementById('messageInput');
-    const sendBtn = document.getElementById('sendButton');
-    const chatSection = document.getElementById('chatSection');
-
-    function appendMessage(msg, from = 'Them') {
+    function log(msg, from = 'Them') {
       const p = document.createElement('p');
       p.textContent = `${from}: ${msg}`;
-      chatDiv.appendChild(p);
+      document.getElementById('chat').appendChild(p);
     }
 
-    function setupDataChannelEvents(dc) {
-      dc.onopen = () => chatSection.style.display = 'block';
-      dc.onmessage = e => appendMessage(e.data);
+    function setupChat(dc) {
+      dc.onmessage = e => log(e.data);
+      dc.onopen = () => document.getElementById('chatSection').style.display = 'block';
     }
 
-    document.getElementById('startButton').onclick = async () => {
-      dataChannel = pc.createDataChannel("chat");
-      setupDataChannelEvents(dataChannel);
+    function createPeerConnection() {
+      pc = new RTCPeerConnection();
+      pc.onicecandidate = e => {
+        if (!e.candidate && pc.localDescription) {
+          const base64 = btoa(JSON.stringify(pc.localDescription));
+          document.getElementById('offer').value = base64;
+          saveToLocalStorage(base64);
+        }
+      };
+      pc.ondatachannel = e => {
+        dataChannel = e.channel;
+        setupChat(dataChannel);
+      };
+    }
 
+    function saveToLocalStorage(signalData) {
+      const connections = JSON.parse(localStorage.getItem(storageKey) || '{}');
+      const name = document.getElementById('nickname').value.trim() || `Unnamed-${Date.now()}`;
+      connections[name] = signalData; // Overwrite connection, preserve nickname
+      localStorage.setItem(storageKey, JSON.stringify(connections));
+      renderStoredConnections();
+    }
+
+    function renderStoredConnections() {
+      const list = document.getElementById('connectionList');
+      list.innerHTML = '';
+      const connections = JSON.parse(localStorage.getItem(storageKey) || '{}');
+      for (const [name, value] of Object.entries(connections)) {
+        const li = document.createElement('li');
+        li.innerHTML = `
+          <strong>${name}</strong><br>
+          <textarea readonly>${value}</textarea><br>
+          <button onclick="reconnect('${name}')">Reconnect</button>
+          <button onclick="deleteConnection('${name}')">Delete</button>
+        `;
+        list.appendChild(li);
+      }
+    }
+
+    function deleteConnection(name) {
+      const connections = JSON.parse(localStorage.getItem(storageKey) || '{}');
+      delete connections[name];
+      localStorage.setItem(storageKey, JSON.stringify(connections));
+      renderStoredConnections();
+    }
+
+    function reconnect(name) {
+      const connections = JSON.parse(localStorage.getItem(storageKey) || '{}');
+      if (connections[name]) {
+        const signal = JSON.parse(atob(connections[name]));
+        if (!pc) createPeerConnection();
+        pc.setRemoteDescription(signal).then(() => {
+          if (signal.type === 'offer') {
+            pc.createAnswer().then(answer => {
+              pc.setLocalDescription(answer);
+            });
+          }
+        });
+      }
+    }
+
+    document.getElementById('startOffer').onclick = async () => {
+      createPeerConnection();
+      dataChannel = pc.createDataChannel('chat');
+      setupChat(dataChannel);
       const offer = await pc.createOffer();
       await pc.setLocalDescription(offer);
+    };
 
-      pc.onicecandidate = e => {
-        if (!e.candidate) {
-          offerBox.value = btoa(JSON.stringify(pc.localDescription));
+    document.getElementById('processSignal').onclick = async () => {
+      const input = JSON.parse(atob(document.getElementById('inputSignal').value));
+      if (!pc) createPeerConnection();
+      if (!pc.currentRemoteDescription) {
+        await pc.setRemoteDescription(input);
+        if (input.type === 'offer') {
+          const answer = await pc.createAnswer();
+          await pc.setLocalDescription(answer);
         }
-      };
-    };
-
-    document.getElementById('generateAnswer').onclick = async () => {
-      const remoteOffer = JSON.parse(atob(remoteOfferBox.value));
-      await pc.setRemoteDescription(remoteOffer);
-
-      pc.ondatachannel = event => {
-        dataChannel = event.channel;
-        setupDataChannelEvents(dataChannel);
-      };
-
-      const answer = await pc.createAnswer();
-      await pc.setLocalDescription(answer);
-
-      pc.onicecandidate = e => {
-        if (!e.candidate) {
-          localAnswerBox.value = btoa(JSON.stringify(pc.localDescription));
-        }
-      };
-    };
-
-    document.getElementById('acceptAnswer').onclick = async () => {
-      const finalAnswer = JSON.parse(atob(finalAnswerBox.value));
-      await pc.setRemoteDescription(finalAnswer);
-    };
-
-    sendBtn.onclick = () => {
-      const msg = input.value;
-      if (msg && dataChannel?.readyState === "open") {
-        dataChannel.send(msg);
-        appendMessage(msg, 'You');
-        input.value = '';
       }
     };
+
+    document.getElementById('send').onclick = () => {
+      const msg = document.getElementById('msg').value;
+      if (dataChannel && dataChannel.readyState === 'open') {
+        dataChannel.send(msg);
+        log(msg, 'You');
+        document.getElementById('msg').value = '';
+      }
+    };
+
+    document.getElementById('clearAll').onclick = () => {
+      localStorage.removeItem(storageKey);
+      renderStoredConnections();
+    };
+
+    renderStoredConnections();
   </script>
 </body>
 </html>
